@@ -13,14 +13,9 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import java.util.Set;
-import java.util.stream.Stream;
 
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.*;
-import javax.lang.model.type.ArrayType;
-import javax.lang.model.type.DeclaredType;
-import javax.lang.model.type.TypeKind;
-import javax.lang.model.type.TypeMirror;
 
 @SupportedAnnotationTypes("com.hayden.inject_fields.AutowireBean")
 @SupportedSourceVersion(SourceVersion.RELEASE_21)

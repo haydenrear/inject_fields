@@ -20,8 +20,6 @@ public class AspectJAutowireParameter implements ApplicationContextAware {
 
     @Around("@annotation(com.hayden.inject_fields.AutowireParameter)")
     public Object intercept(ProceedingJoinPoint joinPoint) throws Throwable {
-        System.out.println("Intercepting method call: " + joinPoint.getSignature().getName());
-        Arrays.stream(joinPoint.getArgs()).map(a -> a);
         if (joinPoint.getSignature() instanceof MethodSignature m) {
             int argNum = 0;
             for (var p : m.getMethod().getParameterAnnotations()) {
