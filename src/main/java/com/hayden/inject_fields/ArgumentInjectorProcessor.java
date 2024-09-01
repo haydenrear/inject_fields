@@ -5,10 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 
 import javax.annotation.processing.*;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.PrintWriter;
+import java.io.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -21,6 +18,13 @@ import javax.lang.model.element.*;
 @SupportedSourceVersion(SourceVersion.RELEASE_21)
 @Slf4j
 public class ArgumentInjectorProcessor extends AbstractProcessor {
+
+    private static String LOG_FILE;
+
+    static {
+        LOG_FILE = Optional.ofNullable(System.getenv("PROCESSOR_LOG")).orElse("out.log");
+    }
+
     private Filer filer;
 
     @Override
@@ -33,22 +37,21 @@ public class ArgumentInjectorProcessor extends AbstractProcessor {
     @Override
     public boolean process(Set<? extends TypeElement> annotations,
                            RoundEnvironment roundEnv) {
-        File file = new File("out.log");
-        file.createNewFile();
-        var fos = new FileOutputStream("out.log");
-        fos.write("hello\n".getBytes());
-        for (Element element : roundEnv.getElementsAnnotatedWith(AutowireBean.class)) {
-            fos.write(element.getSimpleName().toString().getBytes());
-            generateBeanClass(element, fos);
+        File file = new File(LOG_FILE);
+        try (var fileWrite = new FileWriter(file);) {
+            for (Element element : roundEnv.getElementsAnnotatedWith(AutowireBean.class)) {
+                writeToFile(fileWrite, "Found autowire bean: %s.", element.getSimpleName());
+                generateBeanClass(element, fileWrite);
+            }
+            return true;
         }
-        fos.close();
-        return true;
     }
 
     @SneakyThrows
-    private void generateBeanClass(Element parameter, FileOutputStream fos) {
+    private void generateBeanClass(Element parameter, FileWriter fos) {
         // Get the fields from the @AutowireBean annotation
         var fields = getClasses(parameter, fos);
+        var scope = getScope(parameter, fos);
         retrievePackageElement(parameter.getEnclosingElement())
                 .ifPresent(pe -> {
 
@@ -61,18 +64,26 @@ public class ArgumentInjectorProcessor extends AbstractProcessor {
 
                     String file = """
                             package %s;
-
+                            
+                            
+                            @com.hayden.inject_fields.AutowireParameter
+                            @org.springframework.stereotype.Component
+                            @org.springframework.context.annotation.Scope("%s")
                             public class %s {
+                            
                                 %s
+                            
                                 %s
+                            
                                 %s
                             }
-                            """.formatted(pe.getQualifiedName().toString(), StringUtils.capitalize(parameter.getSimpleName().toString()), fieldsCreated, get, set);
+                            """.formatted(pe.getQualifiedName().toString(), scope, StringUtils.capitalize(parameter.getSimpleName().toString()), fieldsCreated, get, set);
+
+                    writeToFile(fos, "\nThe following will be written as the generated parameter object: %s\n", file);
 
                     try {
 
-                        fos.write("writing".getBytes());
-                        fos.write(parameter.asType().getKind().name().getBytes());
+                        writeToFile(fos, parameter.asType().getKind().name());
                         var sf = filer.createSourceFile(StringUtils.capitalize(parameter.asType().toString()));
                         try (PrintWriter writer = new PrintWriter(sf.openWriter())) {
                             writer.print(file);
@@ -85,33 +96,92 @@ public class ArgumentInjectorProcessor extends AbstractProcessor {
 
     }
 
-    record ClassValue(String simpleName, String qualifiedName, String fieldName) {}
+    record ClassValue(String simpleName,
+                      String qualifiedName,
+                      String fieldName) {
+    }
 
-    private ClassValue[] getClasses(Element parameter, FileOutputStream fos) throws IOException {
+    @SneakyThrows
+    private String getScope(Element parameter, FileWriter fos) {
+        writeToFile(fos, "Writing scope.");
+        return parameter.getAnnotationMirrors().stream()
+                .filter(annot -> annot.getAnnotationType().toString().equals(AutowireBean.class.getName()))
+                .findAny()
+                .map(e -> {
+                    var f = retrieveScope(e);
+                    writeToFile(fos, "Found scope: %s.", f);
+                    var scopeFound = f.toString();
+                    if (scopeFound.toLowerCase().contains("prototype")) {
+                        return "prototype";
+                    } else if (scopeFound.toLowerCase().contains("singleton")) {
+                        return "singleton";
+                    } else if (scopeFound.toLowerCase().contains("session")) {
+                        return "session";
+                    } else if (scopeFound.toLowerCase().contains("thread")) {
+                        return "thread";
+                    }
+                    return "prototype";
+                })
+                .orElse("prototype");
+    }
+
+    /**
+     * FYI the writes to the file only show up if the annotation processor fails.
+     * @param fos
+     * @param format
+     */
+    @SneakyThrows
+    private static void writeToFile(FileWriter fos, Object ... format) {
+        if (format.length == 0 || format[0] == null) {
+            return;
+        }
+        if (format[0] instanceof String s) {
+            fos.write(s.formatted(Arrays.copyOfRange(format, 1, format.length)));
+        } else {
+            fos.write(format[0].toString().formatted(Arrays.copyOfRange(format, 1, format.length)));
+        }
+    }
+
+    private ClassValue[] getClasses(Element parameter, FileWriter fos) {
         return parameter.getAnnotationMirrors().stream()
                 .filter(annot -> annot.getAnnotationType().toString().equals(AutowireBean.class.getName()))
                 .findAny()
                 .flatMap(e -> {
                     try {
-                        var f = retrieveField(e);
-                        String string = f.toString();
-                        if (string.contains("{") && string.contains("}")) {
-                            var s = string.split("\\{")[1].split("\\}")[0];
-                            return Optional.of(Arrays.stream(s.split(",")).map(String::strip)
-                                            .map(nextStr -> {
-                                                String[] split = nextStr.split("\\.");
-                                                split = Arrays.stream(split).filter(toR -> !toR.equals("class")).toArray(String[]::new);
-                                                String simpleName = split[split.length - 1];
-                                                return new ClassValue(simpleName, nextStr.replaceAll("\\.class", ""), StringUtils.uncapitalize(simpleName));
-                                            })
-                                    .toArray(ClassValue[]::new));
-                        }
-                        return Optional.empty();
-                    } catch (Exception ignored) {
-                        return Optional.empty();
+                        writeToFile(fos, "");
+                        return retrieveClassValueArray(e);
+                    } catch (Exception exc) {
+                        writeToFile(fos, exc.toString());
+                        throw exc;
                     }
                 })
-                .orElse(new ClassValue[] {});
+                .orElse(new ClassValue[]{});
+    }
+
+    private static Optional<ClassValue[]> retrieveClassValueArray(AnnotationMirror e) {
+        var f = retrieveField(e);
+        String string = f.toString();
+        if (string.contains("{") && string.contains("}")) {
+            var s = string.split("\\{")[1].split("\\}")[0];
+            return Optional.of(Arrays.stream(s.split(",")).map(String::strip)
+                    .map(ArgumentInjectorProcessor::parseClassValue)
+                    .toArray(ClassValue[]::new));
+        }
+        return Optional.empty();
+    }
+
+    private static ClassValue parseClassValue(String nextStr) {
+        String[] split = nextStr.split("\\.");
+        split = Arrays.stream(split).filter(toR -> !toR.equals("class")).toArray(String[]::new);
+        String simpleName = split[split.length - 1];
+        return new ClassValue(simpleName, nextStr.replaceAll("\\.class", ""), StringUtils.uncapitalize(simpleName));
+    }
+
+    private static AnnotationValue retrieveScope(AnnotationMirror e) {
+        return e.getElementValues().entrySet().stream().filter(a -> a.getKey().getSimpleName().toString().contains("scope"))
+                .map(Map.Entry::getValue)
+                .findAny()
+                .orElse(null);
     }
 
     private static AnnotationValue retrieveField(AnnotationMirror e) {
@@ -136,17 +206,17 @@ public class ArgumentInjectorProcessor extends AbstractProcessor {
     private static String getField(String fieldTy, String fieldName) {
         return """
                 public %s get%s() {
-                    return this.%s;
-                }
+                        return this.%s;
+                    }
                 """.formatted(fieldTy, StringUtils.capitalize(fieldName), fieldName);
     }
 
     private static String setField(String fieldTy, String fieldName) {
         return """
                 @org.springframework.beans.factory.annotation.Autowired
-                public void set%s(%s %s) {
-                    this.%s = %s;
-                }
+                    public void set%s(%s %s) {
+                        this.%s = %s;
+                    }
                 """.formatted(StringUtils.capitalize(fieldName), fieldTy, fieldName, fieldName, fieldName);
     }
 

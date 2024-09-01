@@ -10,7 +10,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.stereotype.Component;
 
-import java.util.Arrays;
+import java.util.Optional;
 
 @Component
 @Aspect
@@ -18,23 +18,26 @@ public class AspectJAutowireParameter implements ApplicationContextAware {
 
     private ApplicationContext applicationContext;
 
-    @Around("@annotation(com.hayden.inject_fields.AutowireParameter)")
-    public Object intercept(ProceedingJoinPoint joinPoint) throws Throwable {
+    @Around("@annotation(autowireParameter)")
+    public Object intercept(ProceedingJoinPoint joinPoint,
+                            AutowireParameter autowireParameter) throws Throwable {
         if (joinPoint.getSignature() instanceof MethodSignature m) {
             int argNum = 0;
-            for (var p : m.getMethod().getParameterAnnotations()) {
-                for (var p1 : p) {
-                    if (p1 instanceof DoAutowireParameter d) {
-                        this.applicationContext.getAutowireCapableBeanFactory().autowireBean(joinPoint.getArgs()[argNum]);
-                    }
+            for (var p : m.getMethod().getParameters()) {
+                Class<?> type = p.getType();
+                boolean isAutowireParam = type.getAnnotation(AutowireParameter.class) != null;
+                if (isAutowireParam) {
+                    int finalArgNum = argNum;
+                    Optional.ofNullable(joinPoint.getArgs()[argNum])
+                            .ifPresentOrElse(
+                                    o -> applicationContext.getAutowireCapableBeanFactory().autowireBean(o),
+                                    () -> joinPoint.getArgs()[finalArgNum] = applicationContext.getBean(type));
                 }
                 argNum += 1;
             }
         }
-        // Do something before the method call
-        Object result = joinPoint.proceed();
-        // Do something after the method call
-        return result;
+
+        return joinPoint.proceed(joinPoint.getArgs());
     }
 
     @Override
